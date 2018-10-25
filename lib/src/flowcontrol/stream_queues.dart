@@ -169,6 +169,8 @@ class StreamMessageQueueIn extends Object
   /// The [StreamController] used for producing the [serverPushes] stream.
   StreamController<TransportStreamPush> _serverPushStreamsC;
 
+  bool _cancelled = false;
+
   StreamMessageQueueIn(this.windowHandler) {
     // We start by marking it as buffered, since no one is listening yet and
     // incoming messages will get buffered.
@@ -189,6 +191,7 @@ class StreamMessageQueueIn extends Object
         _tryUpdateBufferIndicator();
       }
     }, onCancel: () {
+      _cancelled = true;
       _pendingMessages.clear();
       startClosing();
       onCloseCheck();
@@ -214,28 +217,32 @@ class StreamMessageQueueIn extends Object
   /// A lower layer enqueues a new [Message] which should be delivered to the
   /// app.
   void enqueueMessage(Message message) {
-    ensureNotClosingSync(() {
-      if (!wasTerminated) {
-        if (message is PushPromiseMessage) {
-          // NOTE: If server pushes were enabled, the client is responsible for
-          // either rejecting or handling them.
-          assert(!_serverPushStreamsC.isClosed);
-          var transportStreamPush =
-              new TransportStreamPush(message.headers, message.pushedStream);
-          _serverPushStreamsC.add(transportStreamPush);
-          return;
-        }
+    if (!_cancelled) ensureNotClosingSync(() {});
 
-        if (message is DataMessage) {
-          windowHandler.gotData(message.bytes.length);
-        }
+    if (!wasTerminated) {
+      if (message is PushPromiseMessage) {
+        // NOTE: If server pushes were enabled, the client is responsible for
+        // either rejecting or handling them.
+        assert(!_serverPushStreamsC.isClosed);
+        var transportStreamPush =
+            new TransportStreamPush(message.headers, message.pushedStream);
+        _serverPushStreamsC.add(transportStreamPush);
+        return;
+      }
+
+      if (message is DataMessage) {
+        windowHandler.gotData(message.bytes.length);
+      }
+      if (!_cancelled) {
         _pendingMessages.add(message);
         if (message.endStream) startClosing();
 
         _tryDispatch();
         _tryUpdateBufferIndicator();
+      } else {
+        if (message.endStream) startClosing();
       }
-    });
+    }
   }
 
   void onTerminated(exception) {
